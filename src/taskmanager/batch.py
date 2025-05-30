@@ -259,15 +259,24 @@ class BatchManager:
             "    local job_name=\"$1\"",
             "    local script_path=\"$2\"", 
             "    local dependency=\"$3\"",
+            "    local work_dir=\"$4\"",
             "    ",
             "    local sbatch_args=\"\"",
             "    if [[ -n \"$dependency\" ]]; then",
             "        sbatch_args=\"--dependency=afterok:$dependency\"",
             "    fi",
             "    ",
+            "    # Add working directory if specified",
+            "    if [[ -n \"$work_dir\" ]]; then",
+            "        sbatch_args=\"$sbatch_args --chdir=$work_dir\"",
+            "    fi",
+            "    ",
             "    echo \"Submitting: $job_name ($script_path)\"",
             "    if [[ -n \"$dependency\" ]]; then",
             "        echo \"  Dependency: $dependency\"",
+            "    fi",
+            "    if [[ -n \"$work_dir\" ]]; then",
+            "        echo \"  Working directory: $work_dir\"",
             "    fi",
             "    ",
             "    # Submit the job and capture job ID",
@@ -275,7 +284,7 @@ class BatchManager:
             "    local exit_code=$?",
             "    ",
             "    if [[ $exit_code -eq 0 ]]; then",
-            "        # Extract job ID from sbatch output (format: \"Submitted batch job 12345\")",
+            "        # Extract job ID from sbatch output",
             "        local job_id=$(echo \"$job_output\" | grep -oE '[0-9]+$')",
             "        echo \"  Job ID: $job_id\"",
             "        echo \"$job_id\"",
@@ -299,6 +308,7 @@ class BatchManager:
         for job in jobs:
             job_name = job['name']
             scripts = job.get('scripts', [])
+            job_path = job.get('path', '.')
             
             if not scripts:
                 continue
@@ -317,20 +327,20 @@ class BatchManager:
             
             # Submit job scripts
             for i, script in enumerate(scripts):
-                script_path = f"{job['path']}/{script}"
+                script_path = f"{job_path}/{script}"
                 step_name = f"{job_name}_{script.replace('.sh', '')}"
                 
                 if execution_mode == "sequential":
                     script_parts.extend([
                         f"echo \"Step {i+1}/{len(scripts)}: {script}\"",
-                        f"job_id=$(submit_job_step \"{step_name}\" \"{script_path}\" \"$prev_job_id\")",
+                        f"job_id=$(submit_job_step \"{step_name}\" \"{script_path}\" \"$prev_job_id\" \"{job_path}\")",
                         "prev_job_id=\"$job_id\"",
                         "echo",
                     ])
                 elif execution_mode == "parallel":
                     script_parts.extend([
                         f"echo \"Step {i+1}/{len(scripts)}: {script} (parallel)\"",
-                        f"job_id=$(submit_job_step \"{step_name}\" \"{script_path}\" \"\")",
+                        f"job_id=$(submit_job_step \"{step_name}\" \"{script_path}\" \"\" \"{job_path}\")",
                         f"job_ids_{job_name}+=(\"$job_id\")",
                         "echo",
                     ])
