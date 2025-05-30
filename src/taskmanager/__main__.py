@@ -14,6 +14,8 @@ from .script_generator import ScriptGenerator
 from .equilibration_generator import EquilibrationGenerator
 from .production_chunker import ProductionChunker
 from .utils import setup_logging, TaskManagerError
+import os
+import logging
 
 def setup_argument_parser():
     """Setup command line argument parser"""
@@ -195,19 +197,52 @@ def main():
     args = parser.parse_args()
     
     # Setup logging
-    setup_logging(verbose=False)
+    setup_logging(args.verbose if hasattr(args, 'verbose') else False)
+    logger = logging.getLogger(__name__)
     
-    # Route to appropriate command handler
-    if args.command == 'batch':
-        return cmd_batch(args)
-    elif args.command == 'generate-chunks':
-        return cmd_generate_chunks(args)
-    elif args.command == 'show-config':
-        return cmd_show_config(args)
-    elif args.command == 'validate-workflow':
-        return cmd_validate_workflow(args)
-    else:
-        print(f"Command not implemented: {args.command}")
+    try:
+        if args.command == 'batch':
+            # Load configuration
+            config_file = getattr(args, 'config', '.slurmparams')
+            config = SlurmConfig(config_file)  # Pass the file path string, not the object
+            
+            # Load job configuration  
+            job_parser = JobParser(args.job_file, getattr(args, 'profile', None))
+            jobs = job_parser.get_jobs()
+            
+            if not jobs:
+                print("No jobs found in configuration")
+                return
+            
+            # Create batch manager with config object
+            batch_manager = BatchManager(config)  # This should receive the config object
+            
+            # Generate script
+            execution_mode = getattr(args, 'execution_mode', 'sequential')
+            script_content = batch_manager.generate_script(jobs, execution_mode)
+            
+            # Handle dry run or actual file creation
+            if args.dry_run:
+                print("Generated batch script: batch_job.sh")
+                print("\n=== Generated Script Content ===")
+                print(script_content)
+            else:
+                output_file = getattr(args, 'output', 'batch_job.sh')
+                with open(output_file, 'w') as f:
+                    f.write(script_content)
+                
+                # Make executable
+                os.chmod(output_file, 0o755)
+                print(f"Generated batch script: {output_file}")
+                
+        elif args.command == 'validate-config':
+            config_file = getattr(args, 'config', '.slurmparams')
+            success = validate_configuration(config_file)  # Pass file path string
+            sys.exit(0 if success else 1)
+            
+        # ... rest of the commands ...
+    except Exception as e:
+        print(f"Error: {e}")
         return 1
 
 if __name__ == '__main__':

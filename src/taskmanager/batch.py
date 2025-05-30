@@ -12,6 +12,9 @@ from .utils import TaskManagerError
 
 class BatchManager:
     def __init__(self, config: SlurmConfig):
+        """Initialize batch manager with SLURM configuration"""
+        if not isinstance(config, SlurmConfig):
+            raise TypeError("config must be a SlurmConfig instance")
         self.config = config
         
     def generate_batch_script(self, jobs: List[Dict[str, Any]], output_file: str = "batch_job.sh", 
