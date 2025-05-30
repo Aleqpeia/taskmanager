@@ -201,3 +201,32 @@ CPUS_PER_TASK=4
     def validate_job_type(self, job_type: str) -> bool:
         """Validate if job type is configured"""
         return job_type.lower() in self.job_configs or job_type == 'default'
+    
+    def validate_config(self) -> List[str]:
+        """Validate configuration and return list of issues"""
+        issues = []
+        
+        # Required parameters
+        required_params = ['PARTITION', 'TIME', 'JOB_NAME']
+        for param in required_params:
+            if param not in self.global_params:
+                issues.append(f"Missing required parameter: {param}")
+        
+        # Validate time format
+        time_value = self.global_params.get('TIME', '')
+        if not self._validate_time_format(time_value):
+            issues.append(f"Invalid time format: {time_value}")
+        
+        return issues
+    
+    def _validate_time_format(self, time_str: str) -> bool:
+        """Validate SLURM time format"""
+        import re
+        # Supports formats like: 1-00:00:00, 24:00:00, 60:00, etc.
+        patterns = [
+            r'^\d+-\d{2}:\d{2}:\d{2}$',  # days-hours:minutes:seconds
+            r'^\d{1,2}:\d{2}:\d{2}$',    # hours:minutes:seconds
+            r'^\d{1,3}:\d{2}$',          # minutes:seconds
+            r'^\d+$'                     # minutes only
+        ]
+        return any(re.match(pattern, time_str) for pattern in patterns)

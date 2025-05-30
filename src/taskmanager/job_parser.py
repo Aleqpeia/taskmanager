@@ -17,19 +17,34 @@ class JobParser:
         self.workflow_data = self.load_workflow()
     
     def load_workflow(self) -> Dict[str, Any]:
-        """Load workflow configuration"""
+        """Load workflow configuration with better error handling"""
         job_path = Path(self.job_file)
         
         if not job_path.exists():
             raise FileNotFoundError(f"Job file not found: {self.job_file}")
         
-        with open(job_path, 'r') as f:
-            if job_path.suffix.lower() in ['.yaml', '.yml']:
-                data = yaml.safe_load(f)
-            else:
-                data = json.load(f)
-        
-        return data
+        try:
+            with open(job_path, 'r') as f:
+                if job_path.suffix.lower() in ['.yaml', '.yml']:
+                    data = yaml.safe_load(f)
+                else:
+                    data = json.load(f)
+            
+            # Validate required structure
+            if not isinstance(data, dict):
+                raise ValueError("Job file must contain a dictionary")
+            
+            if 'jobs' not in data:
+                raise ValueError("Job file must contain 'jobs' section")
+            
+            return data
+            
+        except yaml.YAMLError as e:
+            raise ValueError(f"Invalid YAML in {self.job_file}: {e}")
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in {self.job_file}: {e}")
+        except Exception as e:
+            raise ValueError(f"Error loading {self.job_file}: {e}")
     
     def get_jobs(self) -> List[Dict[str, Any]]:
         """Get processed jobs with dynamic chunk generation"""

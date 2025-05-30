@@ -114,3 +114,31 @@ class InteractiveManager:
         ])
         
         return "\n".join(script_parts)
+
+
+class InteractiveSession:
+    """Interactive session handler"""
+    
+    def __init__(self):
+        """Initialize interactive session"""
+        self.history = []
+        
+    def parse_command(self, cmd_str):
+        """Parse command string into components"""
+        parts = cmd_str.split()
+        if not parts:
+            return None
+            
+        cmd = {
+            'action': parts[0],
+            'target': parts[1] if len(parts) > 1 else None,
+            'options': {}
+        }
+        
+        # Parse options (--key=value)
+        for part in parts[2:]:
+            if part.startswith('--'):
+                key, value = part[2:].split('=', 1)
+                cmd['options'][key] = value
+                
+        return cmd

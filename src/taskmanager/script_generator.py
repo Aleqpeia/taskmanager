@@ -7,12 +7,13 @@ import re
 import yaml
 from pathlib import Path
 from typing import Dict, Any, Optional, List
-
+from taskmanager.config import SlurmConfig
 
 class ScriptGenerator:
     """Generate configurable GROMACS scripts from templates"""
     
-    def __init__(self, template_dir: str = None):
+    def __init__(self, config: SlurmConfig, template_dir: str = None):
+        self.config = config  # Add config reference
         if template_dir is None:
             # Default to taskmanager/templates directory
             self.template_dir = Path(__file__).parent / "templates"
@@ -40,15 +41,20 @@ class ScriptGenerator:
     def _get_steep_template(self) -> str:
         """Template for steepest descent minimization"""
         return '''#!/bin/bash
-# Steepest descent minimization - Template version
+# Steepest descent minimization - Production template for Eagle/Altair
 
 set -euo pipefail
 
+# Load required modules
+module purge
+module load gromacs/2023.3_mpi
+
 # Configuration variables
+export OMP_NUM_THREADS=2
 INPUT_STRUCTURE="${INPUT_STRUCTURE:-step5_input.gro}"
 MDP_FILE="${MDP_FILE:-step6.0_steep.mdp}"
 TOPOLOGY_FILE="${TOPOLOGY_FILE:-topol.top}"
-OUTPUT_PREFIX="${OUTPUT_PREFIX:-step6.0_steep}"
+OUTPUT_PREFIX="${OUTPUT_PREFIX:-steep}"
 MAX_WARNINGS="${MAX_WARNINGS:-1}"
 VERBOSE_OUTPUT="${VERBOSE_OUTPUT:-true}"
 
@@ -76,18 +82,24 @@ fi
 # Generate TPR file
 echo "Generating TPR file..."
 gmx_mpi grompp -f "$MDP_FILE" -c "$INPUT_STRUCTURE" -p "$TOPOLOGY_FILE" \\
-           -o "${OUTPUT_PREFIX}.tpr" -maxwarn "$MAX_WARNINGS"
+           -o "${OUTPUT_PREFIX}.tpr" -maxwarn "$MAX_WARNINGS" -r step5_input.pdb
 
-# Run minimization
+# Run minimization with srun for proper MPI execution
 echo "Running steepest descent minimization..."
 if [[ "$VERBOSE_OUTPUT" == "true" ]]; then
-    gmx_mpi mdrun -v -deffnm "$OUTPUT_PREFIX"
+    srun gmx_mpi mdrun -v -deffnm "$OUTPUT_PREFIX" -ntomp 2
 else
-    gmx_mpi mdrun -deffnm "$OUTPUT_PREFIX"
+    srun gmx_mpi mdrun -deffnm "$OUTPUT_PREFIX" -ntomp 2
+fi
+
+# Validate output
+if [[ ! -f "${OUTPUT_PREFIX}.gro" ]]; then
+    echo "ERROR: Minimization failed - output file not found"
+    exit 1
 fi
 
 echo "Steepest descent minimization completed"
-echo "Output: ${OUTPUT_PREFIX}.gro, ${OUTPUT_PREFIX}.edr"
+echo "Output: ${OUTPUT_PREFIX}.gro, ${OUTPUT_PREFIX}.edr, ${OUTPUT_PREFIX}.log"
 '''
     
     def _get_cg_template(self) -> str:
@@ -231,48 +243,58 @@ echo "Production simulation completed"
 echo "Output: ${OUTPUT_PREFIX}.xtc, ${OUTPUT_PREFIX}.edr, ${OUTPUT_PREFIX}.gro"
 '''
     
-    def generate_script(self, script_path: str, commands: List[str], job_type: str, nodes: int = None):
-        """Generate script with SLURM headers from config"""
+    def generate_script(self, script_type: str, output_path: str, custom_config: Dict[str, Any] = None) -> str:
+        """Generate script from template with SLURM headers"""
+        template_path = self.template_dir / f"{script_type}.sh.template"
         
-        # Get SLURM headers from config
-        sbatch_options = self.config.format_sbatch_options(job_type, nodes)
+        if not template_path.exists():
+            available = self.list_available_templates()
+            raise FileNotFoundError(
+                f"Template not found: {script_type}\n"
+                f"Available templates: {', '.join(available)}"
+            )
         
-        # Extract job name from script path
-        job_name = os.path.basename(script_path).replace('.sh', '')
+        # Load template
+        with open(template_path, 'r') as f:
+            template_content = f.read()
         
-        script_lines = [
-            "#!/bin/bash",
-            "",
-            "# Generated SLURM script",
-            f"# Job type: {job_type}",
-            f"# Nodes: {nodes}",
-            ""
-        ]
+        # Apply configuration
+        config = custom_config or {}
+        script_content = self._apply_template_config(template_content, config)
         
-        # Add SLURM directives
-        script_lines.extend([f"#SBATCH {opt}" for opt in sbatch_options])
-        script_lines.extend([
-            f"#SBATCH --job-name={job_name}",
-            f"#SBATCH --output=logs/{job_name}-%j.out", 
-            f"#SBATCH --error=logs/{job_name}-%j.err",
-            "",
-            "set -euo pipefail",
-            "",
-            "# Ensure output directory exists",
-            "mkdir -p logs",
-            ""
-        ])
-        
-        # Add the actual commands
-        script_lines.extend(commands)
+        # Add SLURM headers if not present
+        if not script_content.startswith('#SBATCH'):
+            script_content = self._add_slurm_headers(script_content, script_type)
         
         # Write script
-        os.makedirs(os.path.dirname(script_path), exist_ok=True)
-        with open(script_path, 'w') as f:
-            f.write('\n'.join(script_lines))
+        output_file = Path(output_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(output_file, 'w') as f:
+            f.write(script_content)
         
         # Make executable
-        os.chmod(script_path, 0o755)
+        os.chmod(output_file, 0o755)
+        
+        return str(output_file)
+    
+    def _add_slurm_headers(self, content: str, script_type: str) -> str:
+        """Add SLURM headers to script content"""
+        lines = content.split('\n')
+        
+        # Find where to insert headers (after shebang)
+        insert_idx = 1 if lines[0].startswith('#!') else 0
+        
+        # Get properly formatted SLURM headers
+        sbatch_headers = self.config.format_sbatch_headers(script_type)
+        
+        # Split headers into lines and skip the shebang (we already have one)
+        header_lines = sbatch_headers.split('\n')[1:]  # Skip #!/bin/bash
+        
+        # Insert headers
+        lines[insert_idx:insert_idx] = header_lines
+        
+        return '\n'.join(lines)
     
     def _apply_template_config(self, content: str, config: Dict[str, Any]) -> str:
         """Apply configuration to template content"""
@@ -290,3 +312,22 @@ echo "Output: ${OUTPUT_PREFIX}.xtc, ${OUTPUT_PREFIX}.edr, ${OUTPUT_PREFIX}.gro"
             template_name = template_file.stem.replace('.sh', '')
             templates.append(template_name)
         return sorted(templates)
+
+    def _format_sbatch_headers(self, job_type: str, nodes: int = None) -> str:
+        """Format SBATCH headers for the script"""
+        headers = []
+        headers.append("#!/bin/bash\n")
+        headers.append("# SLURM job parameters")
+        
+        params = self.config.get_job_params(job_type, nodes)
+        for key, value in params.items():
+            if key == 'OUTPUT_DIR':
+                continue
+            if key == 'OUTPUT_PATTERN':
+                headers.append(f"#SBATCH --output={params.get('OUTPUT_DIR', 'logs')}/{value}")
+            elif key == 'ERROR_PATTERN':
+                headers.append(f"#SBATCH --error={params.get('OUTPUT_DIR', 'logs')}/{value}")
+            else:
+                headers.append(f"#SBATCH --{key.lower()}={value}")
+        
+        return "\n".join(headers)
