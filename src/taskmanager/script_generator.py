@@ -45,9 +45,9 @@ class ScriptGenerator:
 
 set -euo pipefail
 
-# Load required modules
+# Load required modules (updated for Eagle/Altair)
 module purge
-module load gromacs/2023.3_mpi
+module load gromacs/2024.3-gcc-14.2.0
 
 # Configuration variables
 export OMP_NUM_THREADS=2
@@ -81,7 +81,7 @@ fi
 
 # Generate TPR file
 echo "Generating TPR file..."
-gmx_mpi grompp -f "$MDP_FILE" -c "$INPUT_STRUCTURE" -p "$TOPOLOGY_FILE" \\
+gmx grompp -f "$MDP_FILE" -c "$INPUT_STRUCTURE" -p "$TOPOLOGY_FILE" \\
            -o "${OUTPUT_PREFIX}.tpr" -maxwarn "$MAX_WARNINGS" -r step5_input.pdb
 
 # Run minimization with srun for proper MPI execution
