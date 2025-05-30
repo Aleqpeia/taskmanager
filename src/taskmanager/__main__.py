@@ -60,45 +60,42 @@ def cmd_batch(args):
     """Handle batch command"""
     try:
         config = SlurmConfig(args.config)
-        job_parser = JobParser(args.job_file)
-        jobs = job_parser.get_jobs()
+        parser = JobParser(config)
         
-        if args.profile:
-            jobs = job_parser.apply_profile(jobs, args.profile)
+        # Parse jobs
+        workflow = parser.parse_jobs(args.job_file)
+        jobs = workflow.get('jobs', [])
         
-        batch_manager = BatchManager(config)
-        script_content = batch_manager.generate_script(jobs, args.execution)
-        
-        # Write batch script
-        output_path = Path(args.output)
-        with open(output_path, 'w') as f:
-            f.write(script_content)
-        output_path.chmod(0o755)
-        
-        print(f"Generated batch script: {output_path}")
-        
-        if args.dry_run:
-            print("\n=== Generated Script Content ===")
-            print(script_content)
-            return
-        
-        # Submit the job
-        import subprocess
-        result = subprocess.run(['sbatch', str(output_path)], 
-                              capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            print(f"Job submitted successfully!")
-            print(f"Job ID: {result.stdout.strip()}")
-        else:
-            print(f"Error submitting job: {result.stderr}")
+        if not jobs:
+            print("No jobs found in workflow")
             return 1
             
+        # Initialize batch manager
+        batch_manager = BatchManager(config)
+        
+        # Generate batch script
+        output_file = getattr(args, 'output', 'batch_job.sh')
+        execution_mode = getattr(args, 'execution', 'sequential')
+        dry_run = getattr(args, 'dry_run', False)
+        
+        batch_script = batch_manager.generate_batch_script(
+            jobs, output_file, execution_mode, dry_run
+        )
+        
+        print(f"Generated batch script: {batch_script}")
+        
+        if dry_run:
+            print("\n=== Generated Script Content ===")
+            with open(batch_script, 'r') as f:
+                print(f.read())
+        else:
+            print(f"\nTo submit jobs, run: ./{batch_script}")
+            
+        return 0
+        
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error in batch mode: {e}")
         return 1
-    
-    return 0
 
 def cmd_generate_chunks(args):
     """Handle generate-chunks command"""
