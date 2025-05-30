@@ -223,3 +223,122 @@ class BatchManager:
         
         os.chmod(output_file, 0o755)
         return output_file
+
+    def generate_script(self, jobs: List[Dict[str, Any]], execution_mode: str = "sequential") -> str:
+        """Generate batch script with job-specific resources"""
+        script_parts = []
+        
+        # Add SLURM headers for the batch script itself
+        batch_params = self.config.get_global_params()
+        script_parts.extend([
+            "#!/bin/bash",
+            "",
+            "# SLURM directives for workflow manager job"
+        ])
+        
+        # Add SLURM headers
+        sbatch_options = self.config.format_sbatch_options('workflow')
+        script_parts.extend([f"#SBATCH {opt}" for opt in sbatch_options])
+        
+        script_parts.extend([
+            "",
+            "# Generated SLURM batch script",
+            f"# Configuration: {self.config.config_file}",
+            f"# Execution mode: {execution_mode}",
+            "",
+            "set -euo pipefail",
+            "",
+            "# Ensure output directory exists",
+            "mkdir -p logs",
+            "",
+            "# Function to submit job steps",
+            "submit_job_step() {",
+            "    local job_name=\"$1\"",
+            "    local script_path=\"$2\"", 
+            "    local dependency=\"$3\"",
+            "    ",
+            "    local sbatch_args=\"\"",
+            "    if [[ -n \"$dependency\" ]]; then",
+            "        sbatch_args=\"--dependency=afterok:$dependency\"",
+            "    fi",
+            "    ",
+            "    echo \"Submitting: $job_name ($script_path)\"",
+            "    if [[ -n \"$dependency\" ]]; then",
+            "        echo \"  Dependency: $dependency\"",
+            "    fi",
+            "    ",
+            "    # Submit the job and capture job ID",
+            "    local job_output=$(sbatch $sbatch_args \"$script_path\" 2>&1)",
+            "    local exit_code=$?",
+            "    ",
+            "    if [[ $exit_code -eq 0 ]]; then",
+            "        # Extract job ID from sbatch output (format: \"Submitted batch job 12345\")",
+            "        local job_id=$(echo \"$job_output\" | grep -oE '[0-9]+$')",
+            "        echo \"  Job ID: $job_id\"",
+            "        echo \"$job_id\"",
+            "    else",
+            "        echo \"  ERROR: Failed to submit job\"",
+            "        echo \"  Output: $job_output\"",
+            "        exit 1",
+            "    fi",
+            "}",
+            "",
+            "# Job execution starts here",
+            "echo \"Starting workflow execution...\"",
+            "echo \"Mode: $execution_mode\"",
+            "echo",
+            "",
+            "prev_job_id=''",
+            ""
+        ])
+        
+        # Process each job
+        for job in jobs:
+            job_name = job['name']
+            scripts = job.get('scripts', [])
+            
+            if not scripts:
+                continue
+            
+            script_parts.extend([
+                f"# === {job_name.upper()} ===",
+            ])
+            
+            # Add chunking info if applicable
+            if job.get('is_chunked', False):
+                chunk_meta = job.get('chunk_metadata', {})
+                total_chunks = chunk_meta.get('total_chunks', 1)
+                chunk_length = chunk_meta.get('chunk_length_ns', 1)
+                total_time = total_chunks * chunk_length
+                script_parts.append(f"# Chunked simulation: {total_chunks} chunks × {chunk_length} ns = {total_time} ns total")
+            
+            # Submit job scripts
+            for i, script in enumerate(scripts):
+                script_path = f"{job['path']}/{script}"
+                step_name = f"{job_name}_{script.replace('.sh', '')}"
+                
+                if execution_mode == "sequential":
+                    script_parts.extend([
+                        f"echo \"Step {i+1}/{len(scripts)}: {script}\"",
+                        f"job_id=$(submit_job_step \"{step_name}\" \"{script_path}\" \"$prev_job_id\")",
+                        "prev_job_id=\"$job_id\"",
+                        "echo",
+                    ])
+                elif execution_mode == "parallel":
+                    script_parts.extend([
+                        f"echo \"Step {i+1}/{len(scripts)}: {script} (parallel)\"",
+                        f"job_id=$(submit_job_step \"{step_name}\" \"{script_path}\" \"\")",
+                        f"job_ids_{job_name}+=(\"$job_id\")",
+                        "echo",
+                    ])
+            
+            script_parts.append("")
+        
+        # Add completion message
+        script_parts.extend([
+            "echo \"All jobs submitted successfully!\"",
+            "echo \"Monitor with: squeue -u $USER\"",
+            ""
+        ])
+        
+        return '\n'.join(script_parts)

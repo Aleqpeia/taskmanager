@@ -6,6 +6,7 @@ import yaml
 import json
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+from .utils import ValidationError, TaskManagerError
 
 
 class JobParser:
@@ -21,7 +22,7 @@ class JobParser:
         job_path = Path(self.job_file)
         
         if not job_path.exists():
-            raise FileNotFoundError(f"Job file not found: {self.job_file}")
+            raise ValidationError(f"Job file not found: {self.job_file}")
         
         try:
             with open(job_path, 'r') as f:
@@ -32,19 +33,19 @@ class JobParser:
             
             # Validate required structure
             if not isinstance(data, dict):
-                raise ValueError("Job file must contain a dictionary")
+                raise ValidationError("Job file must contain a dictionary")
             
             if 'jobs' not in data:
-                raise ValueError("Job file must contain 'jobs' section")
+                raise ValidationError("Job file must contain 'jobs' section")
             
             return data
             
         except yaml.YAMLError as e:
-            raise ValueError(f"Invalid YAML in {self.job_file}: {e}")
+            raise ValidationError(f"Invalid YAML in {self.job_file}: {e}")
         except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON in {self.job_file}: {e}")
+            raise ValidationError(f"Invalid JSON in {self.job_file}: {e}")
         except Exception as e:
-            raise ValueError(f"Error loading {self.job_file}: {e}")
+            raise ValidationError(f"Error loading {self.job_file}: {e}")
     
     def get_jobs(self) -> List[Dict[str, Any]]:
         """Get processed jobs with dynamic chunk generation"""
@@ -175,3 +176,74 @@ class JobParser:
             print()
         
         print("=" * 50)
+
+    def parse_jobs(self, job_file: str) -> Dict[str, Any]:
+        """Parse job configuration from YAML file"""
+        job_path = Path(job_file)
+        
+        if not job_path.exists():
+            raise ValidationError(f"Job file not found: {job_file}")
+        
+        try:
+            with open(job_path, 'r') as f:
+                workflow = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            raise ValidationError(f"Invalid YAML in {job_file}: {e}")
+        
+        # Validate workflow structure
+        self._validate_workflow(workflow)
+        
+        return workflow
+    
+    def _validate_workflow(self, workflow: Dict[str, Any]):
+        """Validate workflow structure"""
+        if 'workflow' not in workflow:
+            raise ValidationError("Missing 'workflow' section")
+        
+        if 'jobs' not in workflow:
+            raise ValidationError("Missing 'jobs' section")
+        
+        workflow_info = workflow['workflow']
+        required_fields = ['name', 'description']
+        
+        for field in required_fields:
+            if field not in workflow_info:
+                raise ValidationError(f"Missing required workflow field: {field}")
+        
+        # Validate jobs
+        jobs = workflow['jobs']
+        if not isinstance(jobs, list):
+            raise ValidationError("'jobs' must be a list")
+        
+        for i, job in enumerate(jobs):
+            self._validate_job(job, i)
+    
+    def _validate_job(self, job: Dict[str, Any], index: int):
+        """Validate individual job configuration"""
+        required_fields = ['name', 'path', 'job_type', 'scripts']
+        
+        for field in required_fields:
+            if field not in job:
+                raise ValidationError(f"Job {index}: Missing required field '{field}'")
+        
+        # Validate scripts list
+        scripts = job['scripts']
+        if not isinstance(scripts, list) or not scripts:
+            raise ValidationError(f"Job {index}: 'scripts' must be a non-empty list")
+        
+        # Validate job_type
+        valid_types = ['minimization', 'equilibration', 'production']
+        if job['job_type'] not in valid_types:
+            raise ValidationError(
+                f"Job {index}: Invalid job_type '{job['job_type']}'. "
+                f"Must be one of: {', '.join(valid_types)}"
+            )
+        
+        # Validate nodes if present
+        if 'nodes' in job:
+            try:
+                nodes = int(job['nodes'])
+                if nodes < 1:
+                    raise ValidationError(f"Job {index}: 'nodes' must be >= 1")
+            except ValueError:
+                raise ValidationError(f"Job {index}: 'nodes' must be an integer")
