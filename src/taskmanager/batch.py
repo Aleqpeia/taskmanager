@@ -228,15 +228,14 @@ class BatchManager:
         return output_file
 
     def generate_script(self, jobs: List[Dict[str, Any]], execution_mode: str = "sequential") -> str:
-        """Generate batch script with job-specific resources"""
+        """Generate batch script that executes jobs directly (not submits them)"""
         script_parts = []
         
-        # Add SLURM headers for the batch script itself
-        batch_params = self.config.get_global_params()
+        # Add SLURM headers for the workflow job
         script_parts.extend([
             "#!/bin/bash",
             "",
-            "# SLURM directives for workflow manager job"
+            "# SLURM directives for the workflow job"
         ])
         
         # Add SLURM headers
@@ -245,67 +244,65 @@ class BatchManager:
         
         script_parts.extend([
             "",
-            "# Generated SLURM batch script",
+            "# Generated SLURM workflow script",
             f"# Configuration: {self.config.config_file}",
             f"# Execution mode: {execution_mode}",
             "",
             "set -euo pipefail",
             "",
-            "# Ensure output directory exists",
+            "# Ensure output directory exists", 
             "mkdir -p logs",
             "",
-            "# Function to submit job steps",
-            "submit_job_step() {",
-            "    local job_name=\"$1\"",
-            "    local script_path=\"$2\"", 
-            "    local dependency=\"$3\"",
-            "    local work_dir=\"$4\"",
+            "# Function to execute job steps",
+            "execute_job_step() {",
+            "    local step_name=\"$1\"",
+            "    local script_path=\"$2\"",
+            "    local work_dir=\"$3\"",
             "    ",
-            "    local sbatch_args=\"\"",
-            "    if [[ -n \"$dependency\" ]]; then",
-            "        sbatch_args=\"--dependency=afterok:$dependency\"",
+            "    echo \"========================================\"",
+            "    echo \"Executing: $step_name\"",
+            "    echo \"Script: $script_path\"",
+            "    echo \"Working directory: $work_dir\"",
+            "    echo \"Time: $(date)\"",
+            "    echo \"========================================\"",
+            "    ",
+            "    # Change to working directory",
+            "    if [[ -n \"$work_dir\" && -d \"$work_dir\" ]]; then",
+            "        cd \"$work_dir\"",
+            "        echo \"Changed to directory: $(pwd)\"",
             "    fi",
             "    ",
-            "    # Add working directory if specified",
-            "    if [[ -n \"$work_dir\" ]]; then",
-            "        sbatch_args=\"$sbatch_args --chdir=$work_dir\"",
-            "    fi",
-            "    ",
-            "    echo \"Submitting: $job_name ($script_path)\"",
-            "    if [[ -n \"$dependency\" ]]; then",
-            "        echo \"  Dependency: $dependency\"",
-            "    fi",
-            "    if [[ -n \"$work_dir\" ]]; then",
-            "        echo \"  Working directory: $work_dir\"",
-            "    fi",
-            "    ",
-            "    # Submit the job and capture job ID",
-            "    local job_output=$(sbatch $sbatch_args \"$script_path\" 2>&1)",
-            "    local exit_code=$?",
-            "    ",
-            "    if [[ $exit_code -eq 0 ]]; then",
-            "        # Extract job ID from sbatch output",
-            "        local job_id=$(echo \"$job_output\" | grep -oE '[0-9]+$')",
-            "        echo \"  Job ID: $job_id\"",
-            "        echo \"$job_id\"",
+            "    # Execute the script",
+            "    if [[ -f \"$script_path\" ]]; then",
+            "        chmod +x \"$script_path\"",
+            "        ./$script_path",
+            "        local exit_code=$?",
+            "        if [[ $exit_code -eq 0 ]]; then",
+            "            echo \"✓ $step_name completed successfully\"",
+            "        else",
+            "            echo \"✗ $step_name failed with exit code $exit_code\"",
+            "            exit $exit_code",
+            "        fi",
             "    else",
-            "        echo \"  ERROR: Failed to submit job\"",
-            "        echo \"  Output: $job_output\"",
+            "        echo \"✗ Script not found: $script_path\"",
             "        exit 1",
             "    fi",
+            "    ",
+            "    echo",
             "}",
             "",
-            "# Job execution starts here",
+            "# Workflow execution starts here",
             "echo \"Starting workflow execution...\"",
             "echo \"Mode: $execution_mode\"",
+            "echo \"Node: $SLURM_JOB_NODELIST\"",
+            "echo \"Job ID: $SLURM_JOB_ID\"",
+            "echo \"Working directory: $(pwd)\"",
             "echo",
-            "",
-            "prev_job_id=''",
             ""
         ])
         
         # Process each job
-        for job in jobs:
+        for job_idx, job in enumerate(jobs):
             job_name = job['name']
             scripts = job.get('scripts', [])
             job_path = job.get('path', '.')
@@ -314,7 +311,7 @@ class BatchManager:
                 continue
             
             script_parts.extend([
-                f"# === {job_name.upper()} ===",
+                f"# === JOB {job_idx + 1}: {job_name.upper()} ===",
             ])
             
             # Add chunking info if applicable
@@ -325,32 +322,50 @@ class BatchManager:
                 total_time = total_chunks * chunk_length
                 script_parts.append(f"# Chunked simulation: {total_chunks} chunks × {chunk_length} ns = {total_time} ns total")
             
-            # Submit job scripts
+            script_parts.append("")
+            
+            # Execute job scripts
             for i, script in enumerate(scripts):
-                script_path = f"{job_path}/{script}"
                 step_name = f"{job_name}_{script.replace('.sh', '')}"
                 
                 if execution_mode == "sequential":
                     script_parts.extend([
                         f"echo \"Step {i+1}/{len(scripts)}: {script}\"",
-                        f"job_id=$(submit_job_step \"{step_name}\" \"{script_path}\" \"$prev_job_id\" \"{job_path}\")",
-                        "prev_job_id=\"$job_id\"",
-                        "echo",
+                        f"execute_job_step \"{step_name}\" \"{script}\" \"{job_path}\"",
+                        ""
                     ])
                 elif execution_mode == "parallel":
+                    # For parallel execution, run in background
                     script_parts.extend([
                         f"echo \"Step {i+1}/{len(scripts)}: {script} (parallel)\"",
-                        f"job_id=$(submit_job_step \"{step_name}\" \"{script_path}\" \"\" \"{job_path}\")",
-                        f"job_ids_{job_name}+=(\"$job_id\")",
-                        "echo",
+                        f"execute_job_step \"{step_name}\" \"{script}\" \"{job_path}\" &",
+                        f"pids+=($!)",
+                        ""
                     ])
+            
+            # Wait for parallel jobs to complete
+            if execution_mode == "parallel":
+                script_parts.extend([
+                    "# Wait for all parallel jobs in this stage to complete",
+                    "for pid in \"${pids[@]}\"; do",
+                    "    wait $pid",
+                    "    if [[ $? -ne 0 ]]; then",
+                    "        echo \"Parallel job failed\"",
+                    "        exit 1",
+                    "    fi",
+                    "done",
+                    "pids=()",
+                    ""
+                ])
             
             script_parts.append("")
         
         # Add completion message
         script_parts.extend([
-            "echo \"All jobs submitted successfully!\"",
-            "echo \"Monitor with: squeue -u $USER\"",
+            "echo \"========================================\"",
+            "echo \"All workflow steps completed successfully!\"", 
+            "echo \"Completion time: $(date)\"",
+            "echo \"========================================\"",
             ""
         ])
         
